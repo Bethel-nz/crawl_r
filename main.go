@@ -2,7 +2,6 @@ package main
 
 import (
 	//Local Packages
-	"bufio"
 	"errors"
 	"flag"
 	"fmt"
@@ -91,7 +90,7 @@ func webCrawlerWrapper() error {
 
 	log.Println("Writing results to file...")
 	for _, res := range results {
-		_, err := file.WriteString(fmt.Sprintf("URL: %s, Status Code: %d\n", res.URL, res.StatusCode))
+		_, err := file.WriteString(fmt.Sprintf("URL: %s\n{Title: %s\nH1: %s\nMeta Description: %s\nStatus Code: %d\n}\n", res.URL, res.Title, res.H1, res.MetaDescription, res.StatusCode))
 		if err != nil {
 			log.Printf("Failed to write to file: %v", err)
 		}
@@ -122,37 +121,10 @@ func validateUrl(url string) error {
 	return nil
 }
 
-func checkRobotsTxt(baseURL string) []string {
-	robotsURL := baseURL + "/robots.txt"
-	resp, err := makeRequest(robotsURL)
-	if err != nil {
-		log.Printf("Error fetching robots.txt: %v", err)
-		return nil
-	}
-	defer resp.Body.Close()
-
-	scanner := bufio.NewScanner(resp.Body)
-	var sitemaps []string
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "Sitemap:") {
-			sitemapURL := strings.TrimSpace(strings.TrimPrefix(line, "Sitemap:"))
-			sitemaps = append(sitemaps, sitemapURL)
-		}
-	}
-
-	return sitemaps
-}
-
 func extractSiteMapUrls(url string) []string {
 	var mu sync.Mutex
 	toCrawl := []string{}
 	visited := make(map[string]bool)
-
-	robotsSitemaps := checkRobotsTxt(url)
-	if len(robotsSitemaps) > 0 {
-		toCrawl = append(toCrawl, robotsSitemaps...)
-	}
 
 	var crawl func(url string, depth int)
 	crawl = func(url string, depth int) {
@@ -169,6 +141,7 @@ func extractSiteMapUrls(url string) []string {
 		visited[url] = true
 		mu.Unlock()
 
+		log.Printf("Processing URL (depth %d): %s", depth, url)
 		response, err := makeRequest(url)
 		if err != nil {
 			log.Printf("Error retrieving URL: %s, Error: %v", url, err)
@@ -203,7 +176,7 @@ func extractSiteMapUrls(url string) []string {
 	done := make(chan bool)
 
 	go func() {
-		crawl(url+"/sitemap.xml", 0)
+		crawl(url, 0)
 		done <- true
 	}()
 
@@ -231,10 +204,9 @@ func isSiteMap(urls []string) ([]string, []string) {
 	pages := []string{}
 
 	for _, page := range urls {
-		// Check for common sitemap patterns
-		if strings.Contains(page, "sitemap") && strings.HasSuffix(page, ".xml") {
-			sitemapFiles = append(sitemapFiles, page)
-		} else if strings.HasSuffix(page, ".xml") {
+		foundSitemap := strings.Contains(page, "xml")
+		if foundSitemap {
+			fmt.Println("Found Sitemap", page)
 			sitemapFiles = append(sitemapFiles, page)
 		} else {
 			pages = append(pages, page)
@@ -332,10 +304,9 @@ func scrapePage(url string, tokens chan struct{}) (SeoData, error) {
 	}
 	defer res.Body.Close()
 
-	return SeoData{
-		URL:        url,
-		StatusCode: res.StatusCode,
-	}, nil
+	parser := DefaultParser{}
+
+	return parser.GetSeoData(res)
 }
 
 func crawlPage(url string, tokens chan struct{}) (*http.Response, error) {
@@ -356,6 +327,13 @@ func crawlPage(url string, tokens chan struct{}) (*http.Response, error) {
 func scrapSiteMaps(url string, concurrency int) []SeoData {
 	log.Println("Extracting sitemap URLs...")
 	results := extractSiteMapUrls(url)
+
+	if len(results) == 0 {
+		log.Println("No URLs extracted from sitemap, trying to append sitemap.xml")
+		sitemapURL := strings.TrimRight(url, "/") + "/sitemap.xml"
+		results = extractSiteMapUrls(sitemapURL)
+	}
+
 	log.Printf("Extracted %d URLs from sitemap", len(results))
 
 	if len(results) == 0 {
@@ -366,6 +344,7 @@ func scrapSiteMaps(url string, concurrency int) []SeoData {
 	log.Println("Scraping URLs...")
 	res := scrapeUrls(results, concurrency)
 	log.Printf("Scraped %d URLs", len(res))
+	fmt.Print(res)
 
 	return res
 }
